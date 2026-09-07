@@ -6,13 +6,16 @@ export type Variable = {
   direction: 'positive' | 'negative' | 'neutral'
   lowLabel: string
   highLabel: string
+  source: string
 }
+
+export type ScenarioChange = { variable: string; value: number; label: string }
 
 export type Scenario = {
   id: string
   name: string
   description: string
-  changes: { variable: string; value: number; label: string }[]
+  changes: ScenarioChange[]
   effects: string[]
   tradeoffs: string[]
 }
@@ -27,70 +30,85 @@ export type Analysis = {
   assumptions: string[]
   dependencies: string[]
   scenarios: Scenario[]
-  confidence: number
+  recommendation: string
+  recommendationReason: string
+  nextStep: string
+  contextConfidence: number
   contextQuality: 'needs-context' | 'ready'
   missingContext: string[]
 }
 
-const SIGNALS = [
-  { keys: ['budget','cost','price','money','funding'], name: 'Budget room', description: 'How much financial flexibility the decision has.', direction: 'positive' as const, lowLabel: 'Tight', highLabel: 'Flexible' },
-  { keys: ['deadline','time','month','week','soon','schedule'], name: 'Time flexibility', description: 'How much room you have before timing forces a choice.', direction: 'positive' as const, lowLabel: 'Pressured', highLabel: 'Flexible' },
-  { keys: ['demand','interest','audience','users','customers','adoption'], name: 'Demand evidence', description: 'How much evidence suggests the intended outcome is wanted.', direction: 'positive' as const, lowLabel: 'Unclear', highLabel: 'Strong' },
-  { keys: ['quality','polish','improve','ready','readiness'], name: 'Readiness', description: 'How prepared the option is for the outcome you want.', direction: 'positive' as const, lowLabel: 'Early', highLabel: 'Ready' },
-  { keys: ['access','availability','event','ticket','invite','meet'], name: 'Access feasibility', description: 'How realistic it is to access the opportunity the decision depends on.', direction: 'positive' as const, lowLabel: 'Uncertain', highLabel: 'Likely' },
-  { keys: ['travel','distance','location','transport'], name: 'Logistics', description: 'How practical the required travel, location, or coordination is.', direction: 'positive' as const, lowLabel: 'Difficult', highLabel: 'Practical' },
-  { keys: ['team','people','staff','capacity','resources'], name: 'Available capacity', description: 'How much useful time and capability is available to execute the choice.', direction: 'positive' as const, lowLabel: 'Limited', highLabel: 'Available' },
-  { keys: ['risk','uncertainty','unknown'], name: 'Information certainty', description: 'How much of the decision is supported by information you already have.', direction: 'positive' as const, lowLabel: 'Unknowns', highLabel: 'Known' },
-  { keys: ['competition','competitor'], name: 'Competitive pressure', description: 'How much outside competition could change the attractiveness of a path.', direction: 'negative' as const, lowLabel: 'Low pressure', highLabel: 'High pressure' },
-  { keys: ['experience','skill','skills','confidence'], name: 'Capability fit', description: 'How well your current capabilities match what the option requires.', direction: 'positive' as const, lowLabel: 'Stretch', highLabel: 'Strong fit' },
+type Signal = Omit<Variable, 'impact' | 'value' | 'source'> & { keys: string[] }
+
+const SIGNALS: Signal[] = [
+  { keys: ['budget','cost','price','money','funding','afford'], name: 'Budget flexibility', description: 'How much financial room the choice has before cost becomes a constraint.', direction: 'positive', lowLabel: 'Tight', highLabel: 'Flexible' },
+  { keys: ['deadline','time','month','week','soon','schedule','urgent'], name: 'Time flexibility', description: 'How much room exists before timing forces the decision.', direction: 'positive', lowLabel: 'Pressured', highLabel: 'Flexible' },
+  { keys: ['demand','interest','audience','users','customers','adoption','traction'], name: 'Demand evidence', description: 'How much evidence supports the outcome you want.', direction: 'positive', lowLabel: 'Unclear', highLabel: 'Strong' },
+  { keys: ['quality','polish','improve','ready','readiness','complete','finish'], name: 'Readiness', description: 'How prepared the option is for the outcome you want.', direction: 'positive', lowLabel: 'Early', highLabel: 'Ready' },
+  { keys: ['access','availability','event','ticket','invite','meet','opportunity'], name: 'Access feasibility', description: 'How much control you have over the opportunity the decision depends on.', direction: 'positive', lowLabel: 'Uncertain', highLabel: 'Likely' },
+  { keys: ['travel','distance','location','transport','commute'], name: 'Logistics', description: 'How practical the travel, location, coordination, or setup is.', direction: 'positive', lowLabel: 'Difficult', highLabel: 'Practical' },
+  { keys: ['team','people','staff','capacity','resources','developer'], name: 'Available capacity', description: 'How much useful time and capability is available to execute the choice.', direction: 'positive', lowLabel: 'Limited', highLabel: 'Available' },
+  { keys: ['risk','uncertainty','unknown','information','know'], name: 'Information certainty', description: 'How much important information is known before committing.', direction: 'positive', lowLabel: 'Unknowns', highLabel: 'Known' },
+  { keys: ['competition','competitor','market'], name: 'Competitive pressure', description: 'How strongly outside alternatives could change the trade-off.', direction: 'negative', lowLabel: 'Low pressure', highLabel: 'High pressure' },
+  { keys: ['experience','skill','skills','confidence','capable'], name: 'Capability fit', description: 'How well current capabilities match what the choice requires.', direction: 'positive', lowLabel: 'Stretch', highLabel: 'Strong fit' },
 ]
 
 function titleFrom(input: string) {
   const sentence = input.split(/[.!?]/)[0].trim()
-  return sentence.length > 72 ? `${sentence.slice(0, 69)}…` : sentence || 'Your decision'
+  return sentence.length > 78 ? `${sentence.slice(0, 75)}…` : sentence || 'Your decision'
+}
+
+function cleanOption(value: string) {
+  return value.replace(/^(whether|if)\s+/i, '').replace(/\s+/g, ' ').trim().replace(/[,:;]+$/, '')
 }
 
 function extractOptions(input: string) {
   const patterns = [
     /(?:choose between|between|either)\s+([^.!?]+?)\s+(?:or|vs\.?|versus)\s+([^.!?]+)/gi,
-    /(?:should we|should i|whether to|decide whether to)\s+([^.!?]+?)\s+(?:or|vs\.?|versus)\s+([^.!?]+)/gi,
+    /(?:should (?:we|i)|do we|do i|whether to|decide whether to)\s+([^.!?]+?)\s+(?:or|vs\.?|versus)\s+([^.!?]+)/gi,
+    /(?:option|choice|alternative)\s*(?:a|1)\s*[:=-]\s*([^.!?]+?)(?:\s+(?:and|or)\s+(?:option|choice|alternative)\s*(?:b|2)\s*[:=-]\s*([^.!?]+))?/gi,
   ]
   const values: string[] = []
   for (const pattern of patterns) {
-    for (const match of input.matchAll(pattern)) values.push(match[1].trim(), match[2].trim())
+    for (const match of input.matchAll(pattern)) {
+      if (match[1]) values.push(cleanOption(match[1]))
+      if (match[2]) values.push(cleanOption(match[2]))
+    }
   }
-  const labeled = [...input.matchAll(/(?:option|choice|alternative)\s+[a-z0-9]+\s*[:=-]\s*([^.!?]+)/gi)].map(m => m[1].trim())
-  values.push(...labeled)
-  if (values.length >= 2) return [...new Set(values)].slice(0, 4).map(v => v.charAt(0).toUpperCase() + v.slice(1))
-  return []
+  const unique = [...new Set(values.filter(v => v.length > 1))]
+  return unique.slice(0, 4).map(v => v.charAt(0).toUpperCase() + v.slice(1))
 }
 
 function extractGoal(input: string) {
-  const match = input.match(/(?:goal is|aim is|trying to|objective is|success means|i want to optimize|we want to optimize|my goal|our goal)\s*[:=]?\s*([^.!?]+)/i)
+  const match = input.match(/(?:goal is|aim is|trying to|objective is|success means|optimi[sz]e|my goal(?: is)?|our goal(?: is)?)\s*[:=]?\s*([^.!?]+)/i)
   return match?.[1]?.trim() || ''
+}
+
+function inferValue(signal: Signal, input: string) {
+  const lower = input.toLowerCase()
+  const high = ['flexible','plenty','strong','ready','available','easy','likely','known','high confidence','enough','ample','good fit'].some(k => lower.includes(k))
+  const low = ['limited','tight','small budget','soon','urgent','uncertain','unknown','difficult','hard','low confidence','not ready','little','cannot','can’t','can not'].some(k => lower.includes(k))
+  if (high && !low) return 78
+  if (low && !high) return 28
+  if (signal.name === 'Time flexibility' && /deadline|this week|today|tomorrow|soon|urgent/i.test(input)) return 30
+  if (signal.name === 'Budget flexibility' && /limited budget|small budget|low budget|tight budget/i.test(input)) return 28
+  if (signal.name === 'Information certainty' && /do not know|don't know|unknown|unclear|unsure/i.test(input)) return 25
+  if (signal.name === 'Readiness' && /improving|needs work|polish|not ready|unfinished/i.test(input)) return 35
+  return 55
 }
 
 function extractVariables(input: string): Variable[] {
   const lower = input.toLowerCase()
   const matched = SIGNALS.filter(signal => signal.keys.some(key => lower.includes(key)))
-  const selected = (matched.length ? matched : SIGNALS.filter(signal => ['Access feasibility','Time flexibility','Information certainty'].includes(signal.name))).slice(0, 6)
-  return selected.map((signal, i) => ({
-    name: signal.name,
-    description: signal.description,
-    impact: Math.max(52, 92 - i * 7),
-    value: 50,
-    direction: signal.direction,
-    lowLabel: signal.lowLabel,
-    highLabel: signal.highLabel,
-  }))
+  const selected = (matched.length ? matched : SIGNALS.filter(signal => ['Time flexibility','Information certainty','Available capacity'].includes(signal.name))).slice(0, 6)
+  return selected.map((signal, i) => ({ ...signal, impact: Math.max(40, 88 - i * 8), value: inferValue(signal, input), source: 'derived from your context' }))
 }
 
 function missingContext(input: string, options: string[], goal: string) {
-  const lower = input.toLowerCase()
   const missing: string[] = []
-  if (options.length < 2) missing.push('at least two realistic choices you are deciding between')
-  if (!goal) missing.push('what a good outcome means or what you are optimizing for')
-  if (!/(budget|cost|time|deadline|week|month|resource|team|constraint|limit|available|access|location|risk|uncertain|because|can|cannot|only|have)/i.test(lower)) missing.push('a constraint, resource, timing detail, or important uncertainty')
+  if (options.length < 2) missing.push('Name the actual choices you are deciding between — for example, “do A or do B.”')
+  if (!goal) missing.push('Tell BRANCH what you are optimizing for or what a successful outcome looks like.')
+  if (!/(budget|cost|time|deadline|week|month|resource|team|capacity|constraint|limit|available|access|location|risk|uncertain|unknown|because|can|cannot|only|have|prefer|priority)/i.test(input)) missing.push('Add at least one real constraint, preference, resource, timing detail, or uncertainty.')
   return missing
 }
 
@@ -101,63 +119,93 @@ function scenarioLabel(variable: Variable, value: number) {
 }
 
 function makeScenarios(variables: Variable[]): Scenario[] {
+  const important = variables.slice(0, 4)
   const definitions = [
-    { id: 'upside', name: 'Conditions improve', description: 'The assumptions that matter most move in a favorable direction.', delta: 22 },
-    { id: 'expected', name: 'Current situation', description: 'Your present assumptions hold without a major surprise.', delta: 0 },
-    { id: 'pressure', name: 'A constraint tightens', description: 'The most important constraint becomes harder to satisfy.', delta: -22 },
+    { id: 'favorable', name: 'Favorable conditions', description: 'The conditions that support your decision become easier to satisfy.', delta: 18 },
+    { id: 'current', name: 'Current conditions', description: 'The situation stays close to the assumptions you supplied.', delta: 0 },
+    { id: 'tight', name: 'Constraints tighten', description: 'The most relevant constraints become harder to satisfy.', delta: -18 },
   ]
   return definitions.map(definition => {
-    const changes = variables.slice(0, 4).map((variable, index) => {
-      const signed = variable.direction === 'negative' ? -definition.delta : definition.delta
-      const value = Math.max(0, Math.min(100, 50 + signed - index * (definition.id === 'pressure' ? 2 : 0)))
+    const changes = important.map(variable => {
+      const direction = variable.direction === 'negative' ? -1 : 1
+      const value = Math.max(0, Math.min(100, variable.value + definition.delta * direction))
       return { variable: variable.name, value, label: scenarioLabel(variable, value) }
     })
-    const first = variables[0]
-    const second = variables[1]
-    const effects = definition.id === 'upside'
-      ? [`More room to act on ${first?.name.toLowerCase() || 'the main driver'}.`, `The decision has more space to absorb uncertainty.`]
-      : definition.id === 'pressure'
-        ? [`The decision becomes more sensitive to ${first?.name.toLowerCase() || 'its main constraint'}.`, `A path that depends on flexibility carries more downside.`]
-        : [`The current balance between ${first?.name.toLowerCase() || 'the main driver'} and ${second?.name.toLowerCase() || 'the next driver'} remains intact.`, 'Small changes are more useful to investigate than a single predicted outcome.']
-    const tradeoffs = definition.id === 'upside'
-      ? ['Faster action may still trade away information.', 'A favorable assumption can reverse later.']
-      : definition.id === 'pressure'
-        ? ['Waiting or reducing commitment may preserve optionality.', 'Delay can also create its own opportunity cost.']
-        : ['There is no universally best path without knowing which trade-off matters most to you.', 'The model should be challenged with your real constraints.']
+    const first = important[0]
+    const second = important[1]
+    const effects = definition.id === 'favorable'
+      ? [`The choice has more room to work with ${first?.name.toLowerCase() || 'its main driver'}.`, `A path that benefits from flexibility becomes easier to justify.`]
+      : definition.id === 'tight'
+        ? [`The decision becomes more exposed to ${first?.name.toLowerCase() || 'its main constraint'}.`, `A lower-commitment path may become more attractive because it preserves room to adapt.`]
+        : [`The current balance around ${first?.name.toLowerCase() || 'the main driver'} and ${second?.name.toLowerCase() || 'the next driver'} remains the reference point.`, 'This is the baseline to compare against before changing one condition at a time.']
+    const tradeoffs = definition.id === 'favorable'
+      ? ['Moving faster can still reduce the information you collect first.', 'A favorable condition is an assumption to monitor, not a guarantee.']
+      : definition.id === 'tight'
+        ? ['Reducing commitment can preserve optionality.', 'Waiting can introduce its own cost if the opportunity changes.']
+        : ['Your priorities determine which trade-off matters most.', 'The model is directional and should be challenged with real information.']
     return { id: definition.id, name: definition.name, description: definition.description, changes, effects, tradeoffs }
   })
+}
+
+function pathLanguage(option: string, index: number, variables: Variable[]) {
+  const text = option.toLowerCase()
+  const driver = variables[0]?.name.toLowerCase() || 'the main constraint'
+  if (/(wait|delay|later|improve|research|learn|prepare)/i.test(text)) return `Choosing this path gives you more room to learn or improve before committing. Its main dependency is ${driver}.`
+  if (/(launch|start|go|act|accept|commit|buy|ship|publish)/i.test(text)) return `Choosing this path creates momentum sooner. The trade-off is that you accept more of the uncertainty that exists today, especially around ${driver}.`
+  return index === 0 ? `This path makes a clearer commitment now. Its outcome depends most on ${driver}.` : `This path preserves a different balance of commitment and flexibility. Watch ${driver} as the situation changes.`
+}
+
+function recommend(options: string[], goal: string, variables: Variable[]) {
+  const text = `${goal} ${options.join(' ')}`.toLowerCase()
+  const scores = options.map((option, index) => {
+    let value = 0
+    if (/(learn|quality|safe|sustainable|long-term|long term|reliable|certainty|understand)/.test(text)) value += /(wait|improve|research|learn|prepare)/i.test(option) ? 3 : 0
+    if (/(speed|fast|quick|deadline|momentum|launch|growth|opportunity)/.test(text)) value += /(launch|start|act|accept|commit|ship|now)/i.test(option) ? 3 : 0
+    if (/(flexible|optionality|low risk|test|experiment)/.test(text)) value += /(pilot|test|small|wait|research)/i.test(option) ? 2 : 0
+    return value + Math.max(0, 2 - index)
+  })
+  const index = scores.indexOf(Math.max(...scores))
+  const option = options[index]
+  const reason = /long-term|quality|safe|sustainable|learn|certainty/i.test(goal)
+    ? `Because your stated priority is ${goal}, this path currently fits that priority better than the alternatives. It does not mean the path is guaranteed to work.`
+    : `Based on the priority you gave BRANCH, this path currently aligns most closely with your stated objective. If your priority changes, the recommendation can change too.`
+  return { option, reason }
 }
 
 export function analyzeDecision(input: string): Analysis {
   const options = extractOptions(input)
   const goal = extractGoal(input)
   const variables = extractVariables(input)
-  const lower = input.toLowerCase()
   const missing = missingContext(input, options, goal)
   const ready = missing.length === 0
+  const lower = input.toLowerCase()
   const risks = [
-    lower.includes('budget') || lower.includes('cost') ? 'Resource pressure could reduce the room available to recover from a weak outcome.' : 'Key assumptions may change after the decision is made.',
-    lower.includes('deadline') || lower.includes('time') ? 'Time pressure can force trade-offs between speed and quality.' : 'The outcome depends on information that may be incomplete today.',
-    lower.includes('access') || lower.includes('meet') || lower.includes('event') ? 'Access or availability may be outside your control.' : 'Different factors can interact, so the simulation is directional rather than predictive.'
+    /budget|cost|money/i.test(lower) ? 'Cost pressure can reduce the room available to recover from a weak outcome.' : 'Important assumptions can change after the decision is made.',
+    /deadline|time|week|month/i.test(lower) ? 'Timing can force a trade-off between acting now and learning more first.' : 'The outcome depends on information that may still be incomplete.',
+    /access|meet|event|opportunity/i.test(lower) ? 'Availability or access may be outside your control.' : 'Factors can interact in ways the model cannot fully observe.'
   ]
   const assumptions = [
-    'The information provided is a reasonable representation of the current situation.',
-    'The stated goal is more important than unmentioned objectives.',
-    'The variables are useful proxies for the decision, not facts about the future.'
+    'The context you supplied is a reasonable representation of the current situation.',
+    goal ? 'Your stated goal is the priority used to frame the recommendation.' : 'No explicit goal has been supplied yet.',
+    'The drivers are proxies for conditions, not measurements of the future.'
   ]
-  const dependencies = variables.slice(0, 5).map(v => `${v.name} can change which trade-off matters most.`)
-  const confidence = Math.round(Math.min(94, 48 + Math.min(input.length / 10, 42) + (options.length >= 2 ? 4 : 0) + (goal ? 4 : 0)))
+  const dependencies = variables.slice(0, 5).map(v => `${v.name} can materially change the trade-off between your paths.`)
+  const contextConfidence = Math.round(Math.min(96, 42 + Math.min(input.length / 9, 38) + (options.length >= 2 ? 8 : 0) + (goal ? 8 : 0)))
+  const recommendation = ready ? recommend(options, goal, variables) : { option: '', reason: '' }
   return {
     title: titleFrom(input),
-    summary: ready ? `BRANCH mapped ${options.length} choices and ${variables.length} meaningful decision drivers. Explore how the situation changes instead of treating one result as an answer.` : 'This is not a trustworthy decision model yet. BRANCH needs more context before it invents choices or conclusions.',
-    goal: goal || 'Not specified yet — define what a good outcome means before comparing the paths.',
+    summary: ready ? `BRANCH found ${options.length} concrete choices and ${variables.length} context-driven decision drivers. The simulation explores consequences under different conditions rather than pretending to know the future.` : 'BRANCH can help with this, but it needs a few specific facts before it can responsibly construct the paths.',
+    goal: goal || 'Not specified — BRANCH needs to know what you are trying to optimize before it can recommend a path.',
     options: ready ? options : [],
     variables,
     risks,
     assumptions,
     dependencies,
     scenarios: ready ? makeScenarios(variables) : [],
-    confidence,
+    recommendation: recommendation.option,
+    recommendationReason: recommendation.reason,
+    nextStep: ready ? `Watch ${variables[0]?.name.toLowerCase() || 'the main driver'} first. If that condition changes, revisit the paths before committing.` : missing[0] || 'Add more context to continue.',
+    contextConfidence,
     contextQuality: ready ? 'ready' : 'needs-context',
     missingContext: missing,
   }
