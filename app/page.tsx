@@ -110,7 +110,7 @@ export default function Home() {
 
             <section className="modelPanel panel">
               {!analysis ? <div className="emptyState"><div className="emptyIcon">⌁</div><div className="eyebrow">Waiting for context</div><h3>Build a decision you can challenge.</h3><p>BRANCH is not a recommendation box. Give it a real choice and the conditions around that choice, then explore how different situations change the trade-offs.</p><button className="btn ghost" onClick={loadDemo}>Load a complete example</button></div> : <>
-                <div className="modelHeader"><div><div className="miniLabel">Decision model</div><h3>{analysis.title}</h3><p>{analysis.summary}</p></div><div className="confidence"><b>{analysis.confidence}%</b><span>context strength</span></div></div>
+                <div className="modelHeader"><div><div className="miniLabel">Decision model</div><h3>{analysis.title}</h3><p>{analysis.summary}</p></div></div>
 
                 {analysis.contextQuality === 'needs-context' && <div className="contextWarning"><div className="warningIcon">!</div><div><strong>This is an outcome, not a decision yet.</strong><span>BRANCH will not invent paths from a vague wish. Add the choices you are considering and the situation that makes the choice difficult.</span><ul>{analysis.missingContext.map(item => <li key={item}>{item}</li>)}</ul><div className="contextPrompt">Example: “Should I choose A or B? My goal is __. I can __. I cannot __. The biggest unknown is __.”</div></div></div>}
 
