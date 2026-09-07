@@ -75,8 +75,7 @@ function extractOptions(input: string) {
       if (match[2]) values.push(cleanOption(match[2]))
     }
   }
-  const unique = [...new Set(values.filter(v => v.length > 1))]
-  return unique.slice(0, 4).map(v => v.charAt(0).toUpperCase() + v.slice(1))
+  return [...new Set(values.filter(v => v.length > 1))].slice(0, 4).map(v => v.charAt(0).toUpperCase() + v.slice(1))
 }
 
 function extractGoal(input: string) {
@@ -147,29 +146,38 @@ function makeScenarios(variables: Variable[]): Scenario[] {
   })
 }
 
-function pathLanguage(option: string, index: number, variables: Variable[]) {
-  const text = option.toLowerCase()
-  const driver = variables[0]?.name.toLowerCase() || 'the main constraint'
-  if (/(wait|delay|later|improve|research|learn|prepare)/i.test(text)) return `Choosing this path gives you more room to learn or improve before committing. Its main dependency is ${driver}.`
-  if (/(launch|start|go|act|accept|commit|buy|ship|publish)/i.test(text)) return `Choosing this path creates momentum sooner. The trade-off is that you accept more of the uncertainty that exists today, especially around ${driver}.`
-  return index === 0 ? `This path makes a clearer commitment now. Its outcome depends most on ${driver}.` : `This path preserves a different balance of commitment and flexibility. Watch ${driver} as the situation changes.`
+function preferenceBonus(option: string, goal: string, variables: Variable[], index: number) {
+  const text = `${option} ${goal}`.toLowerCase()
+  let fit = Math.max(0, 2 - index)
+  if (/(learn|quality|safe|sustainable|long-term|long term|reliable|certainty|understand)/.test(text) && /(wait|delay|improve|research|learn|prepare)/i.test(option)) fit += 4
+  if (/(speed|fast|quick|deadline|momentum|growth|opportunity)/.test(text) && /(launch|start|act|accept|commit|ship|now)/i.test(option)) fit += 4
+  if (/(flexible|optionality|low risk|test|experiment)/.test(text) && /(pilot|test|small|wait|research)/i.test(option)) fit += 3
+  for (const variable of variables) {
+    const low = variable.value < 35
+    const high = variable.value > 70
+    if (variable.name === 'Time flexibility' && low && /(wait|delay|improve|research)/i.test(option)) fit -= 2
+    if (variable.name === 'Time flexibility' && low && /(now|launch|start|act|ship)/i.test(option)) fit += 2
+    if (variable.name === 'Readiness' && low && /(improve|prepare|wait|research)/i.test(option)) fit += 3
+    if (variable.name === 'Readiness' && low && /(launch|ship|commit|now)/i.test(option)) fit -= 2
+    if (variable.name === 'Budget flexibility' && low && /(small|pilot|wait|research|improve)/i.test(option)) fit += 2
+    if (variable.name === 'Information certainty' && low && /(wait|research|learn|test|pilot)/i.test(option)) fit += 3
+    if (variable.name === 'Access feasibility' && high && /(act|go|accept|attend|start|now)/i.test(option)) fit += 2
+  }
+  return fit
 }
 
-function recommend(options: string[], goal: string, variables: Variable[]) {
-  const text = `${goal} ${options.join(' ')}`.toLowerCase()
-  const scores = options.map((option, index) => {
-    let value = 0
-    if (/(learn|quality|safe|sustainable|long-term|long term|reliable|certainty|understand)/.test(text)) value += /(wait|improve|research|learn|prepare)/i.test(option) ? 3 : 0
-    if (/(speed|fast|quick|deadline|momentum|launch|growth|opportunity)/.test(text)) value += /(launch|start|act|accept|commit|ship|now)/i.test(option) ? 3 : 0
-    if (/(flexible|optionality|low risk|test|experiment)/.test(text)) value += /(pilot|test|small|wait|research)/i.test(option) ? 2 : 0
-    return value + Math.max(0, 2 - index)
-  })
-  const index = scores.indexOf(Math.max(...scores))
+export function recommendPath(options: string[], goal: string, variables: Variable[]) {
+  if (!options.length) return { option: '', reason: '' }
+  const fits = options.map((option, index) => preferenceBonus(option, goal, variables, index))
+  const index = fits.indexOf(Math.max(...fits))
   const option = options[index]
-  const reason = /long-term|quality|safe|sustainable|learn|certainty/i.test(goal)
-    ? `Because your stated priority is ${goal}, this path currently fits that priority better than the alternatives. It does not mean the path is guaranteed to work.`
-    : `Based on the priority you gave BRANCH, this path currently aligns most closely with your stated objective. If your priority changes, the recommendation can change too.`
+  const firstDriver = variables[0]?.name.toLowerCase() || 'your main decision driver'
+  const reason = `Given your goal of ${goal || 'making a choice that fits your situation'}, ${option} currently aligns best with the priorities and conditions you supplied. The recommendation is conditional: if ${firstDriver} changes materially, BRANCH may favor a different path.`
   return { option, reason }
+}
+
+export function simulateScenarios(variables: Variable[]) {
+  return makeScenarios(variables)
 }
 
 export function analyzeDecision(input: string): Analysis {
@@ -191,11 +199,11 @@ export function analyzeDecision(input: string): Analysis {
   ]
   const dependencies = variables.slice(0, 5).map(v => `${v.name} can materially change the trade-off between your paths.`)
   const contextConfidence = Math.round(Math.min(96, 42 + Math.min(input.length / 9, 38) + (options.length >= 2 ? 8 : 0) + (goal ? 8 : 0)))
-  const recommendation = ready ? recommend(options, goal, variables) : { option: '', reason: '' }
+  const recommendation = ready ? recommendPath(options, goal, variables) : { option: '', reason: '' }
   return {
     title: titleFrom(input),
     summary: ready ? `BRANCH found ${options.length} concrete choices and ${variables.length} context-driven decision drivers. The simulation explores consequences under different conditions rather than pretending to know the future.` : 'BRANCH can help with this, but it needs a few specific facts before it can responsibly construct the paths.',
-    goal: goal || 'Not specified — BRANCH needs to know what you are trying to optimize before it can recommend a path.',
+    goal: goal || 'Not specified — BRANCH needs to know what you are optimizing for before it can recommend a path.',
     options: ready ? options : [],
     variables,
     risks,
